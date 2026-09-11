@@ -19,7 +19,7 @@ const EXTRA_FULL = [
 
 const manifest = {
   id: 'community.nguonc.com',
-  version: '1.1.0',
+  version: '1.2.0',
   name: 'NguonC',
   description: 'Xem phim từ NguonC — Phim Bộ, Phim Lẻ, Vietsub, Thuyết Minh',
   logo: 'https://phim.nguonc.com/favicon.ico',
@@ -116,7 +116,6 @@ async function buildStreams(detail, siEi, episodeNum) {
       }
 
       if (ep.isHls && ep.m3u8) {
-        // M3u8 trực tiếp
         streams.push({
           url: ep.m3u8,
           title: `▶ NguonC | ${sn} - Tập ${ep.name}`,
@@ -126,13 +125,12 @@ async function buildStreams(detail, siEi, episodeNum) {
           },
         });
       } else if (ep.embed) {
-        // Resolve embed streamc.xyz → m3u8 thực
-        const m3u8 = await nc.resolveEmbed(ep.embed);
-        if (m3u8) {
+        const resolved = await nc.resolveEmbed(ep.embed);
+        if (resolved) {
           let embedOrigin = '';
           try { embedOrigin = new URL(ep.embed).origin; } catch(e) {}
           streams.push({
-            url: m3u8,
+            url: resolved,
             title: `▶ NguonC | ${sn} - Tập ${ep.name}`,
             behaviorHints: {
               notWebReady: false,
@@ -143,7 +141,6 @@ async function buildStreams(detail, siEi, episodeNum) {
             },
           });
         } else {
-          // Fallback embed URL
           streams.push({
             url: ep.embed,
             title: `🌐 NguonC | ${sn} - Tập ${ep.name} (Embed)`,
@@ -154,9 +151,10 @@ async function buildStreams(detail, siEi, episodeNum) {
     }
   }
 
-  // Fallback: nếu không filter được → lấy tất cả
+  // Fallback: nếu không filter được → lấy server đầu tiên
   if (!streams.length && (siEi !== null || episodeNum !== null)) {
-    for (const server of servers) {
+    const server = servers[0];
+    if (server) {
       const sn = server.serverName || 'Server';
       for (const ep of server.episodes) {
         if (ep.isHls && ep.m3u8) {
@@ -169,10 +167,10 @@ async function buildStreams(detail, siEi, episodeNum) {
             },
           });
         } else if (ep.embed) {
-          const m3u8 = await nc.resolveEmbed(ep.embed);
-          if (m3u8) {
+          const resolved = await nc.resolveEmbed(ep.embed);
+          if (resolved) {
             streams.push({
-              url: m3u8,
+              url: resolved,
               title: `▶ NguonC | ${sn} - Tập ${ep.name}`,
               behaviorHints: { notWebReady: false },
             });
@@ -217,7 +215,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
       const imdbId = parts[0];
       const episodeNum = parts[2] ? parseInt(parts[2]) : null;
 
-      // Lấy tên từ Cinemeta
       let name = null;
       try {
         const res = await fetch(
