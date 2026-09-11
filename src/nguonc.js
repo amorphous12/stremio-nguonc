@@ -27,7 +27,6 @@ async function apiGet(url, params = {}) {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function buildThumb(raw) {
   if (!raw) return '';
   raw = raw.trim();
@@ -62,7 +61,6 @@ function inferType(item) {
   return 'movie';
 }
 
-// ── Parse list response ───────────────────────────────────────────────────────
 function parseItems(data) {
   if (!data || data.status !== 'success') return { items: [], paginate: {} };
   const raw = data.items || [];
@@ -87,7 +85,6 @@ function parseItems(data) {
   return { items, paginate };
 }
 
-// ── Parse detail response ─────────────────────────────────────────────────────
 function parseDetail(data) {
   if (!data || !data.movie) return null;
   const movie = data.movie;
@@ -103,14 +100,11 @@ function parseDetail(data) {
     for (const ep of (sv.items || [])) {
       const m3u8  = (ep.m3u8  || '').trim();
       const embed = (ep.embed || '').trim();
-      let link = '';
       let isHls = false;
       if (m3u8 && m3u8.startsWith('http') && m3u8.includes('.m3u8')) {
-        link = m3u8; isHls = true;
-      } else if (embed && embed.startsWith('http')) {
-        link = embed; isHls = false;
-      } else continue;
-      eps.push({ name: ep.name || '?', m3u8, embed, link, isHls });
+        isHls = true;
+      } else if (!embed || !embed.startsWith('http')) continue;
+      eps.push({ name: ep.name || '?', m3u8, embed, isHls });
     }
     if (eps.length) servers.push({ serverName: svName, episodes: eps });
   }
@@ -135,7 +129,6 @@ function parseDetail(data) {
   };
 }
 
-// ── API calls ─────────────────────────────────────────────────────────────────
 async function getLatest(page = 1) {
   const key = `latest_${page}`;
   const c = listCache.get(key); if (c) return c;
@@ -187,6 +180,7 @@ async function getDetail(slug) {
 
 // ── Resolve streamc.xyz embed → m3u8 ─────────────────────────────────────────
 async function resolveEmbed(embedUrl) {
+  // Cache ngắn hơn vì playlist URL có expiry
   const key = `embed_${embedUrl}`;
   const c = detailCache.get(key); if (c) return c;
 
@@ -201,35 +195,59 @@ async function resolveEmbed(embedUrl) {
     });
     const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
 
-    // Tìm data-obf attribute
+    // Method 1: stream-bootstrap JSON → preissued.playlist
+    const bootstrapMatch = html.match(
+      /<script[^>]+id="stream-bootstrap"[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/i
+    );
+    if (bootstrapMatch) {
+      try {
+        const bootstrap = JSON.parse(bootstrapMatch[1]);
+        const playlist = bootstrap?.preissued?.playlist;
+        if (playlist && playlist.startsWith('http')) {
+          console.log('[NguonC] stream-bootstrap playlist found');
+          // Cache ngắn 3 phút vì token có expiry
+          detailCache.set(key, playlist, 180);
+          return playlist;
+        }
+      } catch(e) {
+        console.error('[NguonC] stream-bootstrap parse error:', e.message);
+      }
+    }
+
+    // Method 2: data-obf (format cũ)
     const obfMatch = html.match(/data-obf="([^"]+)"/);
-    if (!obfMatch) {
-      console.error('[NguonC] data-obf not found:', embedUrl);
-      return null;
+    if (obfMatch) {
+      try {
+        const decoded = JSON.parse(Buffer.from(obfMatch[1], 'base64').toString('utf-8'));
+        const subBase64 = decoded.sUb;
+        if (subBase64) {
+          const parsed = new URL(embedUrl);
+          const m3u8Url = `${parsed.protocol}//${parsed.host}/${subBase64}.m3u8`;
+          console.log('[NguonC] data-obf m3u8:', m3u8Url);
+          detailCache.set(key, m3u8Url);
+          return m3u8Url;
+        }
+      } catch(e) {
+        console.error('[NguonC] data-obf error:', e.message);
+      }
     }
 
-    // Base64 decode → JSON → lấy sUb
-    const decoded = JSON.parse(Buffer.from(obfMatch[1], 'base64').toString('utf-8'));
-    const subBase64 = decoded.sUb;
-    if (!subBase64) {
-      console.error('[NguonC] sUb field not found');
-      return null;
+    // Method 3: tìm .m3u8 trực tiếp trong HTML
+    const m3u8Match = html.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/);
+    if (m3u8Match) {
+      console.log('[NguonC] direct m3u8 found');
+      detailCache.set(key, m3u8Match[0], 180);
+      return m3u8Match[0];
     }
 
-    // Ghép URL m3u8: {scheme}://{host}/{sUb}.m3u8
-    const parsed = new URL(embedUrl);
-    const m3u8Url = `${parsed.protocol}//${parsed.host}/${subBase64}.m3u8`;
-    console.log('[NguonC] resolved m3u8:', m3u8Url);
-
-    detailCache.set(key, m3u8Url);
-    return m3u8Url;
+    console.error('[NguonC] no stream found in embed:', embedUrl);
+    return null;
   } catch(e) {
     console.error('[NguonC] resolveEmbed error:', e.message);
     return null;
   }
 }
 
-// ── Meta builders ─────────────────────────────────────────────────────────────
 function toMeta(item) {
   const type = inferType(item);
   return {
