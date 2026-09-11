@@ -7,12 +7,11 @@ const detailCache = new NodeCache({ stdTTL: 300 });
 
 const API_BASE  = 'https://phim.nguonc.com/api';
 const SITE_BASE = 'https://phim.nguonc.com';
-const IMG_BASE  = 'https://phim.nguonc.com';
 
 const client = axios.create({
   timeout: 20000,
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Referer': SITE_BASE + '/',
     'Accept': 'application/json, */*',
   },
@@ -33,7 +32,7 @@ function buildThumb(raw) {
   if (!raw) return '';
   raw = raw.trim();
   if (raw.startsWith('http')) return raw;
-  return IMG_BASE + '/' + raw.replace(/^\//, '');
+  return SITE_BASE + '/' + raw.replace(/^\//, '');
 }
 
 function cleanHtml(text) {
@@ -97,7 +96,6 @@ function parseDetail(data) {
   const displayName = (originName && originName.toLowerCase() !== name.toLowerCase())
     ? `${name} - ${originName}` : name;
 
-  // Parse servers + episodes
   const servers = [];
   for (const sv of (movie.episodes || [])) {
     const svName = sv.server_name || 'Server';
@@ -187,6 +185,51 @@ async function getDetail(slug) {
   return r;
 }
 
+// ── Resolve streamc.xyz embed → m3u8 ─────────────────────────────────────────
+async function resolveEmbed(embedUrl) {
+  const key = `embed_${embedUrl}`;
+  const c = detailCache.get(key); if (c) return c;
+
+  console.log('[NguonC] resolveEmbed:', embedUrl);
+  try {
+    const res = await client.get(embedUrl, {
+      headers: {
+        'Referer': SITE_BASE + '/',
+        'Accept': 'text/html,application/xhtml+xml,*/*',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      }
+    });
+    const html = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+
+    // Tìm data-obf attribute
+    const obfMatch = html.match(/data-obf="([^"]+)"/);
+    if (!obfMatch) {
+      console.error('[NguonC] data-obf not found:', embedUrl);
+      return null;
+    }
+
+    // Base64 decode → JSON → lấy sUb
+    const decoded = JSON.parse(Buffer.from(obfMatch[1], 'base64').toString('utf-8'));
+    const subBase64 = decoded.sUb;
+    if (!subBase64) {
+      console.error('[NguonC] sUb field not found');
+      return null;
+    }
+
+    // Ghép URL m3u8: {scheme}://{host}/{sUb}.m3u8
+    const parsed = new URL(embedUrl);
+    const m3u8Url = `${parsed.protocol}//${parsed.host}/${subBase64}.m3u8`;
+    console.log('[NguonC] resolved m3u8:', m3u8Url);
+
+    detailCache.set(key, m3u8Url);
+    return m3u8Url;
+  } catch(e) {
+    console.error('[NguonC] resolveEmbed error:', e.message);
+    return null;
+  }
+}
+
+// ── Meta builders ─────────────────────────────────────────────────────────────
 function toMeta(item) {
   const type = inferType(item);
   return {
@@ -218,7 +261,6 @@ function toFullMeta(detail) {
     language: 'vi',
   };
 
-  // Build videos cho series
   if (type === 'series' && detail.servers.length > 0) {
     const videos = [];
     for (let si = 0; si < detail.servers.length; si++) {
@@ -234,7 +276,6 @@ function toFullMeta(detail) {
         });
       }
     }
-    // Deduplicate theo episode number
     const seen = new Set();
     meta.videos = videos.filter(v => {
       if (seen.has(v.episode)) return false;
@@ -246,11 +287,11 @@ function toFullMeta(detail) {
 }
 
 const CATEGORIES = [
-  { slug: 'phim-bo',   name: '📺 Phim Bộ' },
-  { slug: 'phim-le',   name: '🎬 Phim Lẻ' },
-  { slug: 'dang-chieu',name: '🎦 Đang Chiếu' },
-  { slug: 'tv-shows',  name: '📡 TV Shows' },
-  { slug: 'hoat-hinh', name: '🎌 Hoạt Hình' },
+  { slug: 'phim-bo',    name: '📺 Phim Bộ' },
+  { slug: 'phim-le',    name: '🎬 Phim Lẻ' },
+  { slug: 'dang-chieu', name: '🎦 Đang Chiếu' },
+  { slug: 'tv-shows',   name: '📡 TV Shows' },
+  { slug: 'hoat-hinh',  name: '🎌 Hoạt Hình' },
 ];
 
 const GENRES = [
@@ -290,6 +331,7 @@ const COUNTRIES = [
 
 module.exports = {
   getLatest, getCategory, getGenre, getCountry, search, getDetail,
+  resolveEmbed,
   toMeta, toFullMeta, inferType,
   CATEGORIES, GENRES, COUNTRIES,
 };
