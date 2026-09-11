@@ -19,7 +19,7 @@ const EXTRA_FULL = [
 
 const manifest = {
   id: 'community.nguonc.com',
-  version: '1.0.0',
+  version: '1.1.0',
   name: 'NguonC',
   description: 'Xem phim từ NguonC — Phim Bộ, Phim Lẻ, Vietsub, Thuyết Minh',
   logo: 'https://phim.nguonc.com/favicon.ico',
@@ -27,13 +27,12 @@ const manifest = {
   types: ['movie', 'series'],
   idPrefixes: ['nguonc:', 'tt'],
   catalogs: [
-    { id: 'latest',    type: 'movie',  name: '🆕 Phim Mới Cập Nhật', extra: EXTRA_BASE },
-    { id: 'phim-bo',   type: 'series', name: '📺 Phim Bộ',           extra: EXTRA_FULL },
-    { id: 'phim-le',   type: 'movie',  name: '🎬 Phim Lẻ',           extra: EXTRA_FULL },
-    { id: 'dang-chieu',type: 'movie',  name: '🎦 Đang Chiếu',         extra: EXTRA_BASE },
-    { id: 'tv-shows',  type: 'series', name: '📡 TV Shows',           extra: EXTRA_BASE },
-    { id: 'hoat-hinh', type: 'series', name: '🎌 Hoạt Hình',         extra: EXTRA_BASE },
-    // Quốc gia
+    { id: 'latest',     type: 'movie',  name: '🆕 Phim Mới Cập Nhật', extra: EXTRA_BASE },
+    { id: 'phim-bo',    type: 'series', name: '📺 Phim Bộ',           extra: EXTRA_FULL },
+    { id: 'phim-le',    type: 'movie',  name: '🎬 Phim Lẻ',           extra: EXTRA_FULL },
+    { id: 'dang-chieu', type: 'movie',  name: '🎦 Đang Chiếu',         extra: EXTRA_BASE },
+    { id: 'tv-shows',   type: 'series', name: '📡 TV Shows',           extra: EXTRA_BASE },
+    { id: 'hoat-hinh',  type: 'series', name: '🎌 Hoạt Hình',         extra: EXTRA_BASE },
     { id: 'nc-au-my',      type: 'movie',  name: '🇺🇸 Phim Âu Mỹ',    extra: EXTRA_BASE },
     { id: 'nc-han-quoc',   type: 'series', name: '🇰🇷 Phim Hàn',       extra: EXTRA_BASE },
     { id: 'nc-trung-quoc', type: 'series', name: '🇨🇳 Phim Trung',     extra: EXTRA_BASE },
@@ -98,85 +97,26 @@ builder.defineMetaHandler(async ({ type, id }) => {
   }
 });
 
-// ── Stream ────────────────────────────────────────────────────────────────────
-builder.defineStreamHandler(async ({ type, id }) => {
-  console.log('[stream] id:', id);
-  try {
-    let slug = null;
-    let si = null;
-    let ei = null;
-
-    if (id.startsWith('nguonc:')) {
-      const parts = id.replace('nguonc:', '').split(':');
-      slug = parts[0];
-      si = parts[1] !== undefined ? parseInt(parts[1]) : null;
-      ei = parts[2] !== undefined ? parseInt(parts[2]) : null;
-
-    } else if (id.startsWith('tt')) {
-      // IMDB ID → tìm theo tên từ Cinemeta
-      const parts = id.split(':');
-      const imdbId = parts[0];
-      const episodeNum = parts[2] ? parseInt(parts[2]) : null;
-
-      try {
-        const res = await fetch(
-          `https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`,
-          { signal: AbortSignal.timeout(8000) }
-        );
-        const meta = await res.json();
-        const name = meta?.meta?.name || meta?.meta?.names?.international;
-        if (!name) return { streams: [] };
-
-        const r = await nc.search(name, 1);
-        if (!r.items?.length) return { streams: [] };
-        slug = r.items[0].slug;
-
-        // Tìm tập theo episode number
-        const detail = await nc.getDetail(slug);
-        if (!detail) return { streams: [] };
-        const streams = buildStreams(detail, null, episodeNum);
-        return { streams };
-      } catch(e) {
-        return { streams: [] };
-      }
-    }
-
-    if (!slug) return { streams: [] };
-    const detail = await nc.getDetail(slug);
-    if (!detail) return { streams: [] };
-
-    const streams = buildStreams(detail, si !== null ? { si, ei } : null, null);
-    return { streams };
-  } catch(e) {
-    console.error('[stream] error:', e.message);
-    return { streams: [] };
-  }
-});
-
-function buildStreams(detail, siEi, episodeNum) {
+// ── Stream builder ────────────────────────────────────────────────────────────
+async function buildStreams(detail, siEi, episodeNum) {
   const streams = [];
   const servers = detail.servers || [];
 
   for (let sIdx = 0; sIdx < servers.length; sIdx++) {
     const server = servers[sIdx];
     const sn = server.serverName || `Server ${sIdx + 1}`;
-
-    // Filter theo si:ei nếu có
     if (siEi !== null && siEi.si !== sIdx) continue;
 
     for (let eIdx = 0; eIdx < server.episodes.length; eIdx++) {
       const ep = server.episodes[eIdx];
-
-      // Filter theo ei nếu có
       if (siEi !== null && siEi.ei !== null && siEi.ei !== eIdx) continue;
-
-      // Filter theo episodeNum nếu có
       if (episodeNum !== null) {
         const epNum = parseInt(ep.name) || (eIdx + 1);
         if (epNum !== episodeNum) continue;
       }
 
       if (ep.isHls && ep.m3u8) {
+        // M3u8 trực tiếp
         streams.push({
           url: ep.m3u8,
           title: `▶ NguonC | ${sn} - Tập ${ep.name}`,
@@ -186,16 +126,35 @@ function buildStreams(detail, siEi, episodeNum) {
           },
         });
       } else if (ep.embed) {
-        streams.push({
-          url: ep.embed,
-          title: `🌐 NguonC | ${sn} - Tập ${ep.name} (Embed)`,
-          behaviorHints: { notWebReady: true },
-        });
+        // Resolve embed streamc.xyz → m3u8 thực
+        const m3u8 = await nc.resolveEmbed(ep.embed);
+        if (m3u8) {
+          let embedOrigin = '';
+          try { embedOrigin = new URL(ep.embed).origin; } catch(e) {}
+          streams.push({
+            url: m3u8,
+            title: `▶ NguonC | ${sn} - Tập ${ep.name}`,
+            behaviorHints: {
+              notWebReady: false,
+              headers: {
+                'Referer': ep.embed,
+                'Origin': embedOrigin,
+              },
+            },
+          });
+        } else {
+          // Fallback embed URL
+          streams.push({
+            url: ep.embed,
+            title: `🌐 NguonC | ${sn} - Tập ${ep.name} (Embed)`,
+            behaviorHints: { notWebReady: true },
+          });
+        }
       }
     }
   }
 
-  // Fallback: lấy tất cả nếu không filter được
+  // Fallback: nếu không filter được → lấy tất cả
   if (!streams.length && (siEi !== null || episodeNum !== null)) {
     for (const server of servers) {
       const sn = server.serverName || 'Server';
@@ -210,19 +169,86 @@ function buildStreams(detail, siEi, episodeNum) {
             },
           });
         } else if (ep.embed) {
-          streams.push({
-            url: ep.embed,
-            title: `🌐 NguonC | ${sn} - Tập ${ep.name} (Embed)`,
-            behaviorHints: { notWebReady: true },
-          });
+          const m3u8 = await nc.resolveEmbed(ep.embed);
+          if (m3u8) {
+            streams.push({
+              url: m3u8,
+              title: `▶ NguonC | ${sn} - Tập ${ep.name}`,
+              behaviorHints: { notWebReady: false },
+            });
+          } else {
+            streams.push({
+              url: ep.embed,
+              title: `🌐 NguonC | ${sn} - Tập ${ep.name} (Embed)`,
+              behaviorHints: { notWebReady: true },
+            });
+          }
         }
       }
     }
   }
 
-  console.log('[stream] streams:', streams.length);
+  console.log('[stream] streams built:', streams.length);
   return streams;
 }
+
+// ── Stream ────────────────────────────────────────────────────────────────────
+builder.defineStreamHandler(async ({ type, id }) => {
+  console.log('[stream] id:', id);
+  try {
+    if (id.startsWith('nguonc:')) {
+      const parts = id.replace('nguonc:', '').split(':');
+      const slug = parts[0];
+      const si = parts[1] !== undefined ? parseInt(parts[1]) : null;
+      const ei = parts[2] !== undefined ? parseInt(parts[2]) : null;
+
+      const detail = await nc.getDetail(slug);
+      if (!detail) return { streams: [] };
+
+      const streams = await buildStreams(
+        detail,
+        si !== null ? { si, ei } : null,
+        null
+      );
+      return { streams };
+
+    } else if (id.startsWith('tt')) {
+      const parts = id.split(':');
+      const imdbId = parts[0];
+      const episodeNum = parts[2] ? parseInt(parts[2]) : null;
+
+      // Lấy tên từ Cinemeta
+      let name = null;
+      try {
+        const res = await fetch(
+          `https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`,
+          { signal: AbortSignal.timeout(8000) }
+        );
+        const meta = await res.json();
+        name = meta?.meta?.name || meta?.meta?.names?.international;
+      } catch(e) {
+        console.error('[stream] cinemeta error:', e.message);
+      }
+
+      if (!name) return { streams: [] };
+      console.log('[stream] IMDB:', imdbId, '→', name, 'ep:', episodeNum);
+
+      const r = await nc.search(name, 1);
+      if (!r.items?.length) return { streams: [] };
+
+      const detail = await nc.getDetail(r.items[0].slug);
+      if (!detail) return { streams: [] };
+
+      const streams = await buildStreams(detail, null, episodeNum);
+      return { streams };
+    }
+
+    return { streams: [] };
+  } catch(e) {
+    console.error('[stream] error:', e.message);
+    return { streams: [] };
+  }
+});
 
 const PORT = process.env.PORT || 7000;
 serveHTTP(builder.getInterface(), { port: PORT });
