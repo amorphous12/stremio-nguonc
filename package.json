@@ -1,0 +1,17 @@
+{
+  "name": "stremio-nguonc",
+  "version": "1.0.0",
+  "description": "Stremio addon cho NguonC",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10",
+    "axios": "^1.6.0",
+    "node-cache": "^5.1.2"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
